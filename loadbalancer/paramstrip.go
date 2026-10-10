@@ -627,11 +627,16 @@ func IsUpstreamRelayError(err *types.NewAPIError) bool {
 	if _, ok := IsParamNotSupportedError(err); ok {
 		return false
 	}
-	// Responses 推理水合（解密）失败属于跨账号多轮会话密文不兼容，剥离密文重试即可自愈，不得归为中继代理失效熔断
-	if IsReasoningHydrationError(err) {
-		return false
-	}
-	if IsThinkingModeHistoryError(err) {
+		// Responses 推理水合（解密）失败属于跨账号多轮会话密文不兼容，剥离密文重试即可自愈，不得归为中继代理失效熔断
+		if IsReasoningHydrationError(err) {
+			return false
+		}
+		// 上游 400 报 invalid codex request 或 code invalid_responses_request 属于 Codex 协议/字段校验问题，
+		// 绝非中继代理网关故障，不得归为中继代理失效熔断
+		if IsCodexValidationBadRequest(err) {
+			return false
+		}
+		if IsThinkingModeHistoryError(err) {
 		return true
 	}
 	if IsUpstreamPermissionError(err) {
@@ -699,18 +704,49 @@ func IsUpstreamRateLimitError(err *types.NewAPIError) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "并发请求数限制") ||
-		strings.Contains(msg, "最多同时处理") ||
-		strings.Contains(msg, "请求数限制") ||
-		strings.Contains(msg, "总请求数限制") ||
-		strings.Contains(msg, "rpm") ||
-		strings.Contains(msg, "tpm") ||
-		strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "rate_limit") ||
-		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "超额临时冻结") ||
-		strings.Contains(msg, "负载已饱和")
-}
+		return strings.Contains(msg, "并发请求数限制") ||
+			strings.Contains(msg, "最多同时处理") ||
+			strings.Contains(msg, "请求数限制") ||
+			strings.Contains(msg, "总请求数限制") ||
+			strings.Contains(msg, "rpm") ||
+			strings.Contains(msg, "tpm") ||
+			strings.Contains(msg, "rate limit") ||
+			strings.Contains(msg, "rate_limit") ||
+			strings.Contains(msg, "too many requests") ||
+			strings.Contains(msg, "超额临时冻结") ||
+			strings.Contains(msg, "负载已饱和") ||
+			strings.Contains(msg, "负载已经达到上限") ||
+			strings.Contains(msg, "负载已达到上限")
+	}
+
+	// IsCodexValidationBadRequest 判断是否为 Codex / Responses 接口由于请求参数格式、缺失必要字段或特定后端协议校验返回的 400 Bad Request（如 "invalid codex request"、code="invalid_responses_request"）。
+	// 这属于请求体校验或单后端协议匹配问题，绝非中继代理网关故障，不得触发整渠道熔断。
+	func IsCodexValidationBadRequest(err *types.NewAPIError) bool {
+		if err == nil {
+			return false
+		}
+		if err.StatusCode != http.StatusBadRequest {
+			return false
+		}
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "invalid codex request") ||
+			strings.Contains(msg, "invalid_codex_request") ||
+			strings.Contains(msg, "invalid_responses_request") {
+			return true
+		}
+		if oe, ok := err.RelayError.(types.OpenAIError); ok {
+			codeStr := strings.ToLower(fmt.Sprintf("%v", oe.Code))
+			if strings.Contains(codeStr, "invalid_responses_request") || strings.Contains(codeStr, "invalid_codex_request") {
+				return true
+			}
+		} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
+			codeStr := strings.ToLower(fmt.Sprintf("%v", poe.Code))
+			if strings.Contains(codeStr, "invalid_responses_request") || strings.Contains(codeStr, "invalid_codex_request") {
+				return true
+			}
+		}
+		return false
+	}
 
 // IsUpstreamModelUnavailableError 判断是否为「这个渠道永远不会好」的上游失效。
 //

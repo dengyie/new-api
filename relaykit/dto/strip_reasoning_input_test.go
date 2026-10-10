@@ -82,5 +82,30 @@ func TestStripReasoningInput(t *testing.T) {
 			assert.Len(t, items, 1)
 			assert.Equal(t, "user", items[0]["role"])
 			assert.Equal(t, "How do I decrypt encrypted_content with rs_123 in Python?", items[0]["content"])
-		})
-	}
+			})
+		}
+
+func TestEnsureCodexFields(t *testing.T) {
+	t.Run("injects reasoning.encrypted_content when include is empty", func(t *testing.T) {
+		req := &OpenAIResponsesRequest{}
+		req.EnsureCodexFields()
+		assert.JSONEq(t, `["reasoning.encrypted_content"]`, string(req.Include))
+	})
+
+	t.Run("appends reasoning.encrypted_content when include has other elements", func(t *testing.T) {
+		req := &OpenAIResponsesRequest{
+			Include: json.RawMessage(`["citations"]`),
+		}
+		req.EnsureCodexFields()
+		assert.JSONEq(t, `["citations","reasoning.encrypted_content"]`, string(req.Include))
+	})
+
+	t.Run("does not duplicate when reasoning.encrypted_content already present", func(t *testing.T) {
+		req := &OpenAIResponsesRequest{
+			Include: json.RawMessage(`["reasoning.encrypted_content"]`),
+		}
+		req.EnsureCodexFields()
+		assert.JSONEq(t, `["reasoning.encrypted_content"]`, string(req.Include))
+	})
+}
+

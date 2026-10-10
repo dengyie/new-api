@@ -153,10 +153,14 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if loadbalancer.IsThinkingModeHistoryError(err) {
 		return PolicyDecision{Action: "retry", Reason: "thinking_history_incompatible", Source: "loadbalancer"}
 	}
-	// 智能负载：Responses 推理水合（解密）失败（如 "reasoning hydration failed: Encrypted content could not be decrypted"），换渠道并脱敏重试
-	if loadbalancer.IsReasoningHydrationError(err) {
-		return PolicyDecision{Action: "retry", Reason: "reasoning_hydration_failed", Source: "loadbalancer"}
-	}
+		// 智能负载：Responses 推理水合（解密）失败（如 "reasoning hydration failed: Encrypted content could not be decrypted"），换渠道并脱敏重试
+		if loadbalancer.IsReasoningHydrationError(err) {
+			return PolicyDecision{Action: "retry", Reason: "reasoning_hydration_failed", Source: "loadbalancer"}
+		}
+		// 智能负载：Codex / Responses 校验不兼容错误（如 "invalid codex request"、code="invalid_responses_request"），换渠道重试，不熔断
+		if loadbalancer.IsCodexValidationBadRequest(err) {
+			return PolicyDecision{Action: "retry", Reason: "codex_validation_error", Source: "loadbalancer"}
+		}
 	// 智能负载：上游模型不可用/已禁用/未配置（如 "model not found"、"model is disabled on this gateway"），换渠道重试
 	if loadbalancer.IsUpstreamModelUnavailableError(err) {
 		return PolicyDecision{Action: "retry", Reason: "model_unavailable_retry", Source: "loadbalancer"}

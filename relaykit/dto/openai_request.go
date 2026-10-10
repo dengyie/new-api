@@ -1306,3 +1306,28 @@ func (r *OpenAIResponsesRequest) StripReasoningInput() bool {
 	}
 	return false
 }
+
+// EnsureCodexFields ensures that `include` contains "reasoning.encrypted_content"
+// for Codex-compatible Responses endpoints (such as OpenAI/AnyRouter codex backends).
+func (r *OpenAIResponsesRequest) EnsureCodexFields() {
+	if len(r.Include) == 0 || string(r.Include) == "null" {
+		r.Include = json.RawMessage(`["reasoning.encrypted_content"]`)
+		return
+	}
+	var includes []string
+	if err := kitutil.Unmarshal(r.Include, &includes); err == nil {
+		hasReasoning := false
+		for _, inc := range includes {
+			if inc == "reasoning.encrypted_content" {
+				hasReasoning = true
+				break
+			}
+		}
+		if !hasReasoning {
+			includes = append(includes, "reasoning.encrypted_content")
+			if b, err := kitutil.Marshal(includes); err == nil {
+				r.Include = b
+			}
+		}
+	}
+}

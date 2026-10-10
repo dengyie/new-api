@@ -181,3 +181,40 @@ func TestIsReasoningHydrationError(t *testing.T) {
 	assert.False(t, IsReasoningHydrationError(errOther))
 	assert.False(t, IsReasoningHydrationError(nil))
 }
+
+func TestIsCodexValidationBadRequest(t *testing.T) {
+	err1 := types.NewErrorWithStatusCode(
+		errors.New(`{"error":{"message":"invalid codex request","type":"new_api_error","code":"invalid_responses_request"}}`),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.True(t, IsCodexValidationBadRequest(err1))
+	assert.False(t, IsUpstreamRelayError(err1), "invalid codex request 不得被误判为中继代理失效熔断")
+
+	err2 := types.NewErrorWithStatusCode(
+		errors.New(`{"error":{"message":"invalid request","code":"invalid_responses_request"}}`),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.True(t, IsCodexValidationBadRequest(err2))
+	assert.False(t, IsUpstreamRelayError(err2))
+
+	errNormal400 := types.NewErrorWithStatusCode(
+		errors.New("invalid parameter: temperature"),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadRequest,
+	)
+	assert.False(t, IsCodexValidationBadRequest(errNormal400))
+	assert.False(t, IsCodexValidationBadRequest(nil))
+}
+
+func TestAnyRouterLoadSaturationIsRateLimit(t *testing.T) {
+	errSaturated := types.NewErrorWithStatusCode(
+		errors.New(`{"error":{"message":"当前模型 gpt-6-astra 负载已经达到上限，请稍后重试 (request id: 20261011061804119294113i3RTqyyg)","type":"new_api_error","param":"","code":"get_channel_failed"}}`),
+		types.ErrorCodeBadResponseBody,
+		http.StatusInternalServerError,
+	)
+	assert.True(t, IsUpstreamRateLimitError(errSaturated), "AnyRouter 负载达到上限必须识别为瞬时限流而非硬熔断")
+	assert.False(t, IsUpstreamRelayError(errSaturated), "限流/负载饱和错误不得被误判为中继故障而触发级联硬熔断")
+}
+

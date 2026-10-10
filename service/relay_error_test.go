@@ -341,13 +341,20 @@ func TestDecideRelayRetryTreatsParamErrorAsRequestShape(t *testing.T) {
 			wantReason: "bad_request_retry",
 			wantAction: "retry",
 		},
-		{
-			name:       "500 without param wording stays an upstream fault",
-			statusCode: http.StatusInternalServerError,
-			msg:        "upstream request failed",
-			wantReason: "upstream_relay_error",
-			wantAction: "retry",
-		},
+			{
+				name:       "400 invalid codex request retries for codex validation error",
+				statusCode: http.StatusBadRequest,
+				msg:        `{"error":{"message":"invalid codex request","type":"new_api_error","code":"invalid_responses_request"}}`,
+				wantReason: "codex_validation_error",
+				wantAction: "retry",
+			},
+			{
+				name:       "500 without param wording stays an upstream fault",
+				statusCode: http.StatusInternalServerError,
+				msg:        "upstream request failed",
+				wantReason: "upstream_relay_error",
+				wantAction: "retry",
+			},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())

@@ -751,6 +751,21 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		ttlSeconds = 3600
 	}
 	cache := getChannelAffinityCache()
+
+	// 防降级保护：如果缓存中已存在更高优先级的可用渠道，且新渠道优先级严格较低，
+	// 说明当前请求是高优先级渠道临时故障/重试而由低优先级渠道兜底成功的。
+	// 此时绝不能将亲和度降级覆盖为低优先级渠道，防止后续会话被永久劫持。
+	if existingChannelID, found, _ := cache.Get(cacheKey); found && existingChannelID > 0 && existingChannelID != channelID {
+		existingChannel, _ := model.CacheGetChannel(existingChannelID)
+		newChannel, _ := model.CacheGetChannel(channelID)
+		if existingChannel != nil && newChannel != nil && existingChannel.Status == common.ChannelStatusEnabled {
+			if newChannel.GetPriority() < existingChannel.GetPriority() {
+				// 保留高优先级渠道亲和度，禁止降级覆盖
+				return
+			}
+		}
+	}
+
 	if err := cache.SetWithTTL(cacheKey, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
 		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", cacheKey, err))
 	}

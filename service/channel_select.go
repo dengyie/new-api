@@ -116,6 +116,40 @@ func (r *channelCandidates) pick(group string, retry int) (*model.Channel, error
 	return candidates.Pick(retry, r.param.ExcludedIDs, r.param.StickyKey), nil
 }
 
+func (r *channelCandidates) topAvailablePriority(group string) (int64, bool) {
+	if r == nil || r.param == nil {
+		return 0, false
+	}
+	if group == "auto" {
+		userGroup := common.GetContextKeyString(r.param.Ctx, constant.ContextKeyUserGroup)
+		autoGroups := GetRequestAutoGroups(r.param.Ctx, userGroup)
+		var maxP int64 = math.MinInt64
+		hasAny := false
+		for _, g := range autoGroups {
+			if p, ok := r.topAvailablePriority(g); ok {
+				if !hasAny || p > maxP {
+					maxP = p
+					hasAny = true
+				}
+			}
+		}
+		if !hasAny {
+			return 0, false
+		}
+		return maxP, true
+	}
+	candidates, ok := r.byGroup[group]
+	if !ok {
+		resolved, err := model.GetChannelCandidates(group, r.param.ModelName, r.filters)
+		if err != nil || resolved == nil {
+			return 0, false
+		}
+		r.byGroup[group] = resolved
+		candidates = resolved
+	}
+	return candidates.TopAvailablePriority(r.param.ExcludedIDs, r.param.ModelName)
+}
+
 // select tries to get a channel that satisfies the requirements.
 // 尝试获取一个满足要求的渠道。
 //
@@ -416,13 +450,60 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	usingGroup := retry.TokenGroup
 	var channel *model.Channel
 	var selectGroup string
+
+	// 智能负载：过载/熔断/本请求已用过的渠道自动跳过。
+	// 候选集合整轮只解析一次；每跳过一个渠道就多排除一个，候选耗尽时
+	// pick 返回 nil，循环因此在至多「渠道总数」轮内自然终止，无需人为
+	// 设定尝试上限（过小的上限会让大渠道池因个别过载渠道过早中断）。
+	// 降级渠道（连续慢 3 次）与过载渠道（达到并发上限）都先记为备选：
+	// 过载只是瞬时并发占满，降级是已证实的持续慢，所以过载兜底优先。
+	used := retry.Ctx.GetStringSlice("use_channel")
+	usedSet := make(map[string]struct{}, len(used))
+	for _, id := range used {
+		usedSet[id] = struct{}{}
+	}
+
+	// 使用本地工作副本，绝不调用 retry.IncreaseRetry() 污染外层请求的重试计数与重试预算
+	retryLocal := *retry
+	retryLocal.ExcludedIDs = make(map[int]struct{}, len(used)+len(retry.ExcludedIDs))
+	for id := range retry.ExcludedIDs {
+		retryLocal.ExcludedIDs[id] = struct{}{}
+	}
+	for _, idStr := range used {
+		var id int
+		if _, parseErr := fmt.Sscanf(idStr, "%d", &id); parseErr == nil && id > 0 {
+			retryLocal.ExcludedIDs[id] = struct{}{}
+		}
+	}
+
+	// 候选集合按分组缓存；本函数被重试循环反复调用时也只解析一次
+	candidates := newChannelCandidates(&retryLocal)
+
 	if retry.GetRetry() == 0 {
 		if preferredChannelID, found := GetPreferredChannelByAffinity(c, modelName, usingGroup); found {
 			affinityUsable := false
 			preferred, err := model.CacheGetChannel(preferredChannelID)
+			channelDisabled := (err != nil || preferred == nil || preferred.Status != common.ChannelStatusEnabled)
 			affinitySatisfied := false
-			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
+			if !channelDisabled {
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
+			}
+			if affinitySatisfied {
+				// 检查熔断与过载状态：若首选亲和渠道处于熔断隔离或过载中，本轮不可用
+				if ok, _ := loadbalancer.GlobalTracker().IsAvailable(preferred.Id, modelName); !ok {
+					affinitySatisfied = false
+				}
+			}
+			if affinitySatisfied && RequestPolicy(c).SessionMode != "strict" {
+				// 保持亲和度与优先级兼顾：若候选池中存在更高优先级的健康可用渠道（例如 AnyRouter/Hiyo 优先级 10，
+				// 而历史请求因故障重试被记录到了兜底优先级 8 或 5 的渠道），绝不能被低优先级渠道永久劫持，
+				// 优先放行高优先级渠道探测/服务！
+				if topPriority, hasTop := candidates.topAvailablePriority(usingGroup); hasTop {
+					if preferred.GetPriority() < topPriority {
+						logger.LogDebug(retry.Ctx, fmt.Sprintf("channel affinity: preferred #%d (priority=%d) is lower than available top priority %d, routing to top tier", preferred.Id, preferred.GetPriority(), topPriority))
+						affinitySatisfied = false
+					}
+				}
 			}
 			if affinitySatisfied {
 				if usingGroup == "auto" {
@@ -444,7 +525,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 					MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
 				}
 			}
-			if !affinityUsable && !ShouldKeepChannelAffinityOnChannelDisabled() {
+			if channelDisabled && !ShouldKeepChannelAffinityOnChannelDisabled() {
 				ClearCurrentChannelAffinityCache(c)
 			}
 			if !affinityUsable && RequestPolicy(c).SessionMode == "strict" {
@@ -455,33 +536,6 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 
 	if channel == nil {
 		var err error
-		// 智能负载：过载/熔断/本请求已用过的渠道自动跳过。
-		// 候选集合整轮只解析一次；每跳过一个渠道就多排除一个，候选耗尽时
-		// pick 返回 nil，循环因此在至多「渠道总数」轮内自然终止，无需人为
-		// 设定尝试上限（过小的上限会让大渠道池因个别过载渠道过早中断）。
-		// 降级渠道（连续慢 3 次）与过载渠道（达到并发上限）都先记为备选：
-		// 过载只是瞬时并发占满，降级是已证实的持续慢，所以过载兜底优先。
-		used := retry.Ctx.GetStringSlice("use_channel")
-		usedSet := make(map[string]struct{}, len(used))
-		for _, id := range used {
-			usedSet[id] = struct{}{}
-		}
-
-		// 使用本地工作副本，绝不调用 retry.IncreaseRetry() 污染外层请求的重试计数与重试预算
-		retryLocal := *retry
-		retryLocal.ExcludedIDs = make(map[int]struct{}, len(used)+len(retry.ExcludedIDs))
-		for id := range retry.ExcludedIDs {
-			retryLocal.ExcludedIDs[id] = struct{}{}
-		}
-		for _, idStr := range used {
-			var id int
-			if _, parseErr := fmt.Sscanf(idStr, "%d", &id); parseErr == nil && id > 0 {
-				retryLocal.ExcludedIDs[id] = struct{}{}
-			}
-		}
-
-		// 候选集合按分组缓存；本函数被重试循环反复调用时也只解析一次
-		candidates := newChannelCandidates(&retryLocal)
 		var degradedFallback *model.Channel
 		var degradedSelectGroup string
 		var overloadedFallback *model.Channel

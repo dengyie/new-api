@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"slices"
 
@@ -115,6 +116,37 @@ func priorityTiers(pool []*Channel) []int64 {
 	slices.Sort(tiers)
 	slices.Reverse(tiers)
 	return tiers
+}
+
+// TopAvailablePriority returns the highest priority among enabled, non-excluded channels
+// that are currently available in the loadbalancer tracker (neither breaker-tripped nor overloaded).
+func (c *ChannelCandidates) TopAvailablePriority(excludedIDs map[int]struct{}, modelName string) (int64, bool) {
+	if c == nil || len(c.channels) == 0 {
+		return 0, false
+	}
+	var maxPriority int64 = math.MinInt64
+	hasAvail := false
+	for _, channel := range c.channels {
+		if channel.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		if len(excludedIDs) > 0 {
+			if _, excluded := excludedIDs[channel.Id]; excluded {
+				continue
+			}
+		}
+		if ok, _ := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); ok {
+			p := channel.GetPriority()
+			if !hasAvail || p > maxPriority {
+				maxPriority = p
+				hasAvail = true
+			}
+		}
+	}
+	if !hasAvail {
+		return 0, false
+	}
+	return maxPriority, true
 }
 
 // GetChannelCandidates resolves every channel able to serve group and
