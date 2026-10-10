@@ -627,6 +627,10 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	// 选得到渠道 = 这个模型还在正常服务，清空累计，避免「曾经短暂耗尽」
 	// 和「现在真的整体挂了」混进同一条证据里。
 	loadbalancer.ResetModelExhausted(modelName)
+	if originID, found := GetReasoningOriginChannel(c); found && originID > 0 && channel != nil && channel.Id != originID {
+		logger.LogInfo(retry.Ctx, fmt.Sprintf("channel affinity: responses reasoning drift detected (target #%d != origin #%d), marking pre-emptive strip", channel.Id, originID))
+		common.SetContextKey(c, constant.ContextKeyStripResponsesReasoning, true)
+	}
 	return channel, selectGroup, nil
 }
 

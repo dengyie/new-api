@@ -28,13 +28,17 @@ const (
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
 
-	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
-	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
+	channelAffinityCacheNamespace                = "new-api:channel_affinity:v1"
+	channelAffinityReasoningOriginCacheNamespace = "new-api:channel_reasoning_origin:v1"
+	channelAffinityUsageCacheStatsNamespace      = "new-api:channel_affinity_usage_cache_stats:v1"
 )
 
 var (
 	channelAffinityCacheOnce sync.Once
 	channelAffinityCache     *cachex.HybridCache[int]
+
+	channelAffinityReasoningOriginCacheOnce sync.Once
+	channelAffinityReasoningOriginCache     *cachex.HybridCache[int]
 
 	channelAffinityUsageCacheStatsOnce  sync.Once
 	channelAffinityUsageCacheStatsCache *cachex.HybridCache[ChannelAffinityUsageCacheCounters]
@@ -108,6 +112,51 @@ func getChannelAffinityCache() *cachex.HybridCache[int] {
 		})
 	})
 	return channelAffinityCache
+}
+
+func getChannelAffinityReasoningOriginCache() *cachex.HybridCache[int] {
+	channelAffinityReasoningOriginCacheOnce.Do(func() {
+		setting := operation_setting.GetChannelAffinitySetting()
+		capacity := setting.MaxEntries
+		if capacity <= 0 {
+			capacity = 100_000
+		}
+		defaultTTLSeconds := setting.DefaultTTLSeconds
+		if defaultTTLSeconds <= 0 {
+			defaultTTLSeconds = 3600
+		}
+
+		channelAffinityReasoningOriginCache = cachex.NewHybridCache[int](cachex.HybridCacheConfig[int]{
+			Namespace: cachex.Namespace(channelAffinityReasoningOriginCacheNamespace),
+			Redis:     common.RDB,
+			RedisEnabled: func() bool {
+				return common.RedisEnabled && common.RDB != nil
+			},
+			RedisCodec: cachex.IntCodec{},
+			Memory: func() *hot.HotCache[string, int] {
+				return hot.NewHotCache[string, int](hot.LRU, capacity).
+					WithTTL(time.Duration(defaultTTLSeconds) * time.Second).
+					WithJanitor().
+					Build()
+			},
+		})
+	})
+	return channelAffinityReasoningOriginCache
+}
+
+func GetReasoningOriginChannelCacheForTest() *cachex.HybridCache[int] {
+	return getChannelAffinityReasoningOriginCache()
+}
+
+func normalizeChannelAffinityKey(key string) string {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, channelAffinityCacheNamespace+":") {
+		return strings.TrimPrefix(key, channelAffinityCacheNamespace+":")
+	}
+	if strings.HasPrefix(key, channelAffinityReasoningOriginCacheNamespace+":") {
+		return strings.TrimPrefix(key, channelAffinityReasoningOriginCacheNamespace+":")
+	}
+	return key
 }
 
 func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
@@ -244,6 +293,8 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	originCache := getChannelAffinityReasoningOriginCache()
+	_, _ = originCache.DeleteByPrefix(ruleName)
 	return deleted, nil
 }
 
@@ -657,12 +708,16 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 		return false
 	}
 
+	key := normalizeChannelAffinityKey(cacheKey)
 	cache := getChannelAffinityCache()
-	deleted, err := cache.DeleteMany([]string{cacheKey})
+	deleted, err := cache.DeleteMany([]string{key})
 	if err != nil {
 		common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
 		return false
 	}
+	originCache := getChannelAffinityReasoningOriginCache()
+	_, _ = originCache.DeleteMany([]string{key})
+
 	c.Set(ginKeyChannelAffinitySkipRetry, false)
 	for _, ok := range deleted {
 		if ok {
@@ -670,6 +725,44 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 		}
 	}
 	return false
+}
+
+// GetReasoningOriginChannel 返回当前会话生成推理密文项的来源渠道 ID。
+// 若来源渠道与当前尝试调用的渠道不同，说明多轮会话发生跨渠道漂移，存在上游私钥解密失败风险。
+func GetReasoningOriginChannel(c *gin.Context) (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	cacheKey, _, ok := getChannelAffinityContext(c)
+	if !ok || cacheKey == "" {
+		return 0, false
+	}
+	key := normalizeChannelAffinityKey(cacheKey)
+	originCache := getChannelAffinityReasoningOriginCache()
+	originID, found, err := originCache.Get(key)
+	if err != nil || !found || originID <= 0 {
+		return 0, false
+	}
+	return originID, true
+}
+
+// RecordReasoningOriginChannel 显式记录当前会话密文来源渠道 ID。
+func RecordReasoningOriginChannel(c *gin.Context, channelID int) {
+	if c == nil || channelID <= 0 {
+		return
+	}
+	cacheKey, ttlSeconds, ok := getChannelAffinityContext(c)
+	if !ok || cacheKey == "" {
+		return
+	}
+	if ttlSeconds <= 0 {
+		ttlSeconds = 3600
+	}
+	key := normalizeChannelAffinityKey(cacheKey)
+	originCache := getChannelAffinityReasoningOriginCache()
+	if err := originCache.SetWithTTL(key, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
+		common.SysError(fmt.Sprintf("channel reasoning origin cache set failed: key=%s, err=%v", key, err))
+	}
 }
 
 func ShouldKeepChannelAffinityOnChannelDisabled() bool {
@@ -750,12 +843,20 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 3600
 	}
+	key := normalizeChannelAffinityKey(cacheKey)
+
+	// 记录实际产生密文的渠道 ID（用于后续多轮会话检测跨渠道密文不兼容，进行自适应预检脱敏）
+	originCache := getChannelAffinityReasoningOriginCache()
+	if err := originCache.SetWithTTL(key, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
+		common.SysError(fmt.Sprintf("channel reasoning origin cache set failed: key=%s, err=%v", key, err))
+	}
+
 	cache := getChannelAffinityCache()
 
 	// 防降级保护：如果缓存中已存在更高优先级的可用渠道，且新渠道优先级严格较低，
 	// 说明当前请求是高优先级渠道临时故障/重试而由低优先级渠道兜底成功的。
 	// 此时绝不能将亲和度降级覆盖为低优先级渠道，防止后续会话被永久劫持。
-	if existingChannelID, found, _ := cache.Get(cacheKey); found && existingChannelID > 0 && existingChannelID != channelID {
+	if existingChannelID, found, _ := cache.Get(key); found && existingChannelID > 0 && existingChannelID != channelID {
 		existingChannel, _ := model.CacheGetChannel(existingChannelID)
 		newChannel, _ := model.CacheGetChannel(channelID)
 		if existingChannel != nil && newChannel != nil && existingChannel.Status == common.ChannelStatusEnabled {
@@ -766,8 +867,8 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		}
 	}
 
-	if err := cache.SetWithTTL(cacheKey, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", cacheKey, err))
+	if err := cache.SetWithTTL(key, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", key, err))
 	}
 }
 

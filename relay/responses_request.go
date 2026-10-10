@@ -14,6 +14,7 @@ import (
 	"github.com/dengyie/apihub/relay/helper"
 	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/dengyie/apihub/relaykit/types"
+	"github.com/dengyie/apihub/service"
 	"github.com/dengyie/apihub/setting/model_setting"
 	"github.com/gin-gonic/gin"
 )
@@ -51,9 +52,15 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 	}
 	adaptor.Init(info)
 
-	// 当发生换渠道重试（info.RetryIndex > 0）或显式触发自愈降级时，
+	// 当发生换渠道重试（info.RetryIndex > 0）、跨渠道漂移或显式触发自愈降级时，
 	// 自动剥离历史 reasoning / encrypted_content 项，防止跨 OpenAI 账号推理水合失败 (400)
-	shouldStripReasoning := info.RetryIndex > 0 || common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning)
+	originID, hasOrigin := service.GetReasoningOriginChannel(c)
+	targetChannelID := info.GetChannelID()
+	channelDrifted := hasOrigin && originID > 0 && targetChannelID > 0 && originID != targetChannelID
+
+	shouldStripReasoning := info.RetryIndex > 0 ||
+		common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning) ||
+		channelDrifted
 	stripped := false
 	if shouldStripReasoning {
 		stripped = request.StripReasoningInput()

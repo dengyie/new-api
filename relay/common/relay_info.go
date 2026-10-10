@@ -286,12 +286,19 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
+	if channelType == 0 && info.ChannelMeta != nil && info.ChannelMeta.ChannelType != 0 {
+		channelType = info.ChannelMeta.ChannelType
+	}
+	channelId := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	if channelId == 0 && info.ChannelMeta != nil && info.ChannelMeta.ChannelId != 0 {
+		channelId = info.ChannelMeta.ChannelId
+	}
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
 	apiType, _ := common.ChannelType2APIType(channelType)
 	channelMeta := &ChannelMeta{
 		ChannelType:          channelType,
-		ChannelId:            common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+		ChannelId:            channelId,
 		ChannelIsMultiKey:    common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
 		ChannelMultiKeyIndex: common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
 		ChannelBaseUrl:       common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl),

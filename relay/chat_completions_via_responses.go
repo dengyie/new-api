@@ -122,7 +122,13 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RequestURLPath = "/v1/responses"
 
-	shouldStripReasoning := info.RetryIndex > 0 || common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning)
+	originID, hasOrigin := service.GetReasoningOriginChannel(c)
+	targetChannelID := info.GetChannelID()
+	channelDrifted := hasOrigin && originID > 0 && targetChannelID > 0 && originID != targetChannelID
+
+	shouldStripReasoning := info.RetryIndex > 0 ||
+		common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning) ||
+		channelDrifted
 	if shouldStripReasoning {
 		responsesReq.StripReasoningInput()
 	}

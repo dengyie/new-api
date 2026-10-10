@@ -136,6 +136,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			SessionMode:           "prefer",
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
+			IncludeModelName:      true,
 			UserAgentInclude:      nil,
 		},
 		{
@@ -152,6 +153,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			SessionMode:           "prefer",
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
+			IncludeModelName:      true,
 			UserAgentInclude:      nil,
 		},
 	},

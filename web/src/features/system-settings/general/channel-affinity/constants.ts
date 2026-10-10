@@ -97,7 +97,7 @@ export const RULE_TEMPLATES: Record<string, RuleTemplate> = {
     ttl_seconds: 0,
     skip_retry_on_failure: false,
     include_using_group: true,
-    include_model_name: false,
+    include_model_name: true,
     include_rule_name: true,
   },
   claudeCli: {
@@ -113,7 +113,7 @@ export const RULE_TEMPLATES: Record<string, RuleTemplate> = {
     ttl_seconds: 0,
     skip_retry_on_failure: false,
     include_using_group: true,
-    include_model_name: false,
+    include_model_name: true,
     include_rule_name: true,
   },
 }

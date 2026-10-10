@@ -229,3 +229,157 @@ func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *tes
 	assert.Equal(t, "default", selectGroup2)
 	assert.Equal(t, chMid.Id, selected2.Id, "当高优先级渠道熔断不可用时，优雅回退到亲和度渠道 99")
 }
+
+func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	common.MemoryCacheEnabled = true
+
+	p10 := int64(10)
+	p8 := int64(8)
+	chHigh := &model.Channel{Id: 154, Name: "anyrouter", Status: common.ChannelStatusEnabled, Priority: &p10}
+	chMid := &model.Channel{Id: 99, Name: "fallback", Status: common.ChannelStatusEnabled, Priority: &p8}
+	model.CacheUpdateChannel(chHigh)
+	model.CacheUpdateChannel(chMid)
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	origEnabled := setting.Enabled
+	origSwitchOnSuccess := setting.SwitchOnSuccess
+	setting.Enabled = true
+	setting.SwitchOnSuccess = true
+	t.Cleanup(func() {
+		setting.Enabled = origEnabled
+		setting.SwitchOnSuccess = origSwitchOnSuccess
+	})
+
+	cacheKeySuffix := fmt.Sprintf("test-origin-tracking-%d", time.Now().UnixNano())
+	cache := getChannelAffinityCache()
+	originCache := getChannelAffinityReasoningOriginCache()
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+		_, _ = originCache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	setChannelAffinityContext(c, channelAffinityMeta{
+		CacheKey:   cacheKeySuffix,
+		TTLSeconds: 300,
+		RuleName:   "prompt_cache_key",
+	})
+
+	// 1. 第一轮：渠道 154 成功
+	RecordChannelAffinity(c, chHigh.Id)
+	originID, found := GetReasoningOriginChannel(c)
+	require.True(t, found)
+	assert.Equal(t, chHigh.Id, originID, "密文来源渠道应记录为 154")
+	routeID, foundRoute, _ := cache.Get(cacheKeySuffix)
+	require.True(t, foundRoute)
+	assert.Equal(t, chHigh.Id, routeID, "路由亲和度应记录为 154")
+
+	// 2. 第二轮：渠道 154 瞬时故障，重试到低优先级渠道 99 兜底成功
+	c.Set("channel_id", chMid.Id)
+	RecordChannelAffinity(c, chMid.Id)
+	originID2, found2 := GetReasoningOriginChannel(c)
+	require.True(t, found2)
+	assert.Equal(t, chMid.Id, originID2, "密文来源渠道必须更新为实际兜底成功的渠道 99")
+	routeID2, foundRoute2, _ := cache.Get(cacheKeySuffix)
+	require.True(t, foundRoute2)
+	assert.Equal(t, chHigh.Id, routeID2, "路由亲和度防降级必须保留最高优先级渠道 154")
+
+	// 3. 清理缓存验证
+	ClearCurrentChannelAffinityCache(c)
+	_, foundAfterClear := GetReasoningOriginChannel(c)
+	assert.False(t, foundAfterClear, "清空亲和度缓存后密文来源亦应同步清空")
+	_, foundRouteAfterClear, _ := cache.Get(cacheKeySuffix)
+	assert.False(t, foundRouteAfterClear, "清空亲和度缓存后路由亲和度亦应同步清空")
+}
+
+func TestSelectChannelForRequest_ReasoningDriftDetection(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	common.MemoryCacheEnabled = false
+	const modelName = "gpt-6-astra-drift-test"
+
+	p10 := int64(10)
+	p8 := int64(8)
+	weight := uint(100)
+
+	chHigh := &model.Channel{
+		Id:       154,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-154",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "cpa-anyrouter",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p10,
+	}
+	chMid := &model.Channel{
+		Id:       99,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-99",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "fallback-mid",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p8,
+	}
+
+	require.NoError(t, db.Create(chHigh).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: modelName, ChannelId: 154, Enabled: true, Priority: &p10, Weight: weight}).Error)
+	require.NoError(t, db.Create(chMid).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: modelName, ChannelId: 99, Enabled: true, Priority: &p8, Weight: weight}).Error)
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	origSetting := *setting
+	setting.Enabled = true
+	setting.SessionMode = "prefer"
+	setting.SwitchOnSuccess = true
+	ruleName := "test-session-drift"
+	setting.Rules = []operation_setting.ChannelAffinityRule{
+		{
+			Name:              ruleName,
+			ModelRegex:        []string{".*"},
+			KeySources:        []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session-Key"}},
+			SessionMode:       "prefer",
+			IncludeRuleName:   true,
+			IncludeUsingGroup: true,
+			IncludeModelName:  true,
+		},
+	}
+	t.Cleanup(func() {
+		*setting = origSetting
+	})
+
+	affinityVal := fmt.Sprintf("sess-drift-%d", time.Now().UnixNano())
+	codexRule := setting.Rules[0]
+	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(codexRule, modelName, "default", affinityVal)
+	originCache := getChannelAffinityReasoningOriginCache()
+
+	// 1. 测试跨渠道漂移：密文来源为渠道 99，但本轮路由放行最高优先级 154
+	require.NoError(t, originCache.SetWithTTL(cacheKeySuffix, chMid.Id, time.Minute))
+	t.Cleanup(func() {
+		_, _ = originCache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Request.Header.Set("X-Session-Key", affinityVal)
+
+	selected, _, err := SelectChannelForRequest(c, modelName, retry)
+	require.Nil(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, chHigh.Id, selected.Id, "应放行最高优先级渠道 154")
+	assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyStripResponsesReasoning), "跨渠道漂移时必须标记 ContextKeyStripResponsesReasoning 为 true")
+
+	// 2. 测试同渠道无漂移：密文来源与目标渠道均为 154
+	require.NoError(t, originCache.SetWithTTL(cacheKeySuffix, chHigh.Id, time.Minute))
+	c2, retry2 := newSelectRetryParam(modelName, nil)
+	c2.Request.Header.Set("X-Session-Key", affinityVal)
+
+	selected2, _, err2 := SelectChannelForRequest(c2, modelName, retry2)
+	require.Nil(t, err2)
+	require.NotNil(t, selected2)
+	assert.Equal(t, chHigh.Id, selected2.Id)
+	assert.False(t, common.GetContextKeyBool(c2, constant.ContextKeyStripResponsesReasoning), "同渠道无漂移时不得标记 strip 标记，以完整保留密文")
+}
