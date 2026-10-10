@@ -526,7 +526,11 @@ install_slot_guard() {
     return 0
   fi
 
-  install -m 0755 "$WATCHDOG_SRC" "$GUARD_PATH"
+  if [[ "$WATCHDOG_SRC" != "$GUARD_PATH" ]]; then
+    install -m 0755 "$WATCHDOG_SRC" "$GUARD_PATH"
+  else
+    chmod 0755 "$GUARD_PATH"
+  fi
 
   # The script's digest goes in a comment on purpose. supervisorctl update only
   # restarts a program whose CONFIG changed, so without it a fixed guard would
