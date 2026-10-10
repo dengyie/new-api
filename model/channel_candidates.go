@@ -135,7 +135,7 @@ func (c *ChannelCandidates) TopAvailablePriority(excludedIDs map[int]struct{}, m
 				continue
 			}
 		}
-		if ok, _ := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); ok {
+		if ok, _ := loadbalancer.GlobalTracker().PeekAvailable(channel.Id, modelName); ok {
 			p := channel.GetPriority()
 			if !hasAvail || p > maxPriority {
 				maxPriority = p

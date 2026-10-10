@@ -321,14 +321,51 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		channelMeta.ApiVersion = c.GetString("region")
 	}
 
+	if info.ChannelMeta != nil {
+		if channelMeta.ApiKey == "" && info.ChannelMeta.ApiKey != "" {
+			channelMeta.ApiKey = info.ChannelMeta.ApiKey
+		}
+		if channelMeta.ChannelBaseUrl == "" && info.ChannelMeta.ChannelBaseUrl != "" {
+			channelMeta.ChannelBaseUrl = info.ChannelMeta.ChannelBaseUrl
+		}
+		if channelMeta.Organization == "" && info.ChannelMeta.Organization != "" {
+			channelMeta.Organization = info.ChannelMeta.Organization
+		}
+		if channelMeta.ApiVersion == "" && info.ChannelMeta.ApiVersion != "" {
+			channelMeta.ApiVersion = info.ChannelMeta.ApiVersion
+		}
+		if channelMeta.ChannelCreateTime == 0 && info.ChannelMeta.ChannelCreateTime != 0 {
+			channelMeta.ChannelCreateTime = info.ChannelMeta.ChannelCreateTime
+		}
+		if len(channelMeta.ParamOverride) == 0 && len(info.ChannelMeta.ParamOverride) > 0 {
+			channelMeta.ParamOverride = info.ChannelMeta.ParamOverride
+		}
+		if len(channelMeta.HeadersOverride) == 0 && len(info.ChannelMeta.HeadersOverride) > 0 {
+			channelMeta.HeadersOverride = info.ChannelMeta.HeadersOverride
+		}
+		if channelMeta.UpstreamModelName == "" && info.ChannelMeta.UpstreamModelName != "" {
+			channelMeta.UpstreamModelName = info.ChannelMeta.UpstreamModelName
+		}
+		if !channelMeta.IsModelMapped && info.ChannelMeta.IsModelMapped {
+			channelMeta.IsModelMapped = info.ChannelMeta.IsModelMapped
+		}
+		if !channelMeta.SupportStreamOptions && info.ChannelMeta.SupportStreamOptions {
+			channelMeta.SupportStreamOptions = info.ChannelMeta.SupportStreamOptions
+		}
+	}
+
 	channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting)
 	if ok {
 		channelMeta.ChannelSetting = channelSetting
+	} else if info.ChannelMeta != nil {
+		channelMeta.ChannelSetting = info.ChannelMeta.ChannelSetting
 	}
 
 	channelOtherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if ok {
 		channelMeta.ChannelOtherSettings = channelOtherSettings
+	} else if info.ChannelMeta != nil {
+		channelMeta.ChannelOtherSettings = info.ChannelMeta.ChannelOtherSettings
 	}
 
 	if channelType == constant.ChannelTypeAdvancedCustom &&

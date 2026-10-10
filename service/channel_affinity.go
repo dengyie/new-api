@@ -258,6 +258,18 @@ func ClearChannelAffinityCacheAll() int {
 			common.SysError(fmt.Sprintf("channel affinity cache delete many failed: err=%v", err))
 		}
 	}
+
+	originCache := getChannelAffinityReasoningOriginCache()
+	originKeys, oErr := originCache.Keys()
+	if oErr != nil {
+		common.SysError(fmt.Sprintf("channel reasoning origin cache list keys failed: err=%v", oErr))
+		originKeys = nil
+	}
+	if len(originKeys) > 0 {
+		if _, err := originCache.DeleteMany(originKeys); err != nil {
+			common.SysError(fmt.Sprintf("channel reasoning origin cache delete many failed: err=%v", err))
+		}
+	}
 	return len(keys)
 }
 
@@ -755,6 +767,10 @@ func RecordReasoningOriginChannel(c *gin.Context, channelID int) {
 	if !ok || cacheKey == "" {
 		return
 	}
+	setting := operation_setting.GetChannelAffinitySetting()
+	if ttlSeconds <= 0 && setting != nil {
+		ttlSeconds = setting.DefaultTTLSeconds
+	}
 	if ttlSeconds <= 0 {
 		ttlSeconds = 3600
 	}
@@ -846,10 +862,7 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	key := normalizeChannelAffinityKey(cacheKey)
 
 	// 记录实际产生密文的渠道 ID（用于后续多轮会话检测跨渠道密文不兼容，进行自适应预检脱敏）
-	originCache := getChannelAffinityReasoningOriginCache()
-	if err := originCache.SetWithTTL(key, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
-		common.SysError(fmt.Sprintf("channel reasoning origin cache set failed: key=%s, err=%v", key, err))
-	}
+	RecordReasoningOriginChannel(c, channelID)
 
 	cache := getChannelAffinityCache()
 

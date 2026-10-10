@@ -173,6 +173,23 @@ func TestIsReasoningHydrationError(t *testing.T) {
 	assert.True(t, IsReasoningHydrationError(err2))
 	assert.False(t, IsUpstreamRelayError(err2), "推理水合解密失败不得被判定为中继代理失效")
 
+	// 验证 RelayError 为 types.OpenAIError 或 *types.OpenAIError 时的解包识别
+	errWrappedVal := &types.NewAPIError{
+		StatusCode: http.StatusBadRequest,
+		RelayError: types.OpenAIError{
+			Message: "The encrypted content for item rs_abc could not be verified. Reason: reasoning hydration failed",
+		},
+	}
+	assert.True(t, IsReasoningHydrationError(errWrappedVal), "OpenAIError 值结构体中的推理水合错误必须被识别")
+
+	errWrappedPtr := &types.NewAPIError{
+		StatusCode: http.StatusBadRequest,
+		RelayError: &types.OpenAIError{
+			Message: "Encrypted content could not be decrypted or parsed",
+		},
+	}
+	assert.True(t, IsReasoningHydrationError(errWrappedPtr), "OpenAIError 指针结构体中的推理水合错误必须被识别")
+
 	errOther := types.NewErrorWithStatusCode(
 		errors.New("invalid parameter: temperature"),
 		types.ErrorCodeBadResponseBody,

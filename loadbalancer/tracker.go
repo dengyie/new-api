@@ -634,7 +634,74 @@ func (t *Tracker) IsAvailable(channelID int, model string) (bool, string) {
 	return true, ""
 }
 
-// checkBreaker 对单把键做熔断状态机检查。
+// PeekAvailable 只读检查渠道当前对 model 是否可能可用（未熔断、半开未满额、未过载）。
+// 与 IsAvailable 的区别在于：PeekAvailable 是纯只读检查，绝不预占或自增半开探测配额（halfOpenProbes），
+// 适用于候选池最高优先级探测、健康度扫描等无发起请求意图的只读判定。
+func (t *Tracker) PeekAvailable(channelID int, model string) (bool, string) {
+	if !Enabled() || channelID <= 0 {
+		return true, ""
+	}
+	policy := GetPolicy().Resolve(channelID)
+
+	modelScoped := model != "" && policy.Breaker.PerModelOrDefault()
+	keys := [2]breakerKey{{channelID: channelID}, {}}
+	nkeys := 1
+	if modelScoped {
+		keys[1] = breakerKey{channelID: channelID, model: model}
+		nkeys = 2
+	}
+
+	if !policy.BreakerExempt {
+		for i := 0; i < nkeys; i++ {
+			if reason := t.peekBreaker(keys[i], policy); reason != "" {
+				return false, reason
+			}
+		}
+	}
+
+	if max := policy.MaxInflight; max > 0 && int(t.getInflight(channelID).Load()) >= max {
+		return false, ReasonOverloaded
+	}
+
+	return true, ""
+}
+
+// peekBreaker 对单把键做熔断状态机的只读检查。
+// 绝不修改 s.state 或 s.halfOpenProbes，返回 reason 非空表示不可用。
+func (t *Tracker) peekBreaker(k breakerKey, policy ChannelPolicy) string {
+	s := t.getBreaker(k)
+	switch state := breakerState(s.state.Load()); state {
+	case breakerOpen:
+		if until := s.blockedUntil.Load(); until > 0 {
+			if time.Now().Unix() < until {
+				return ReasonCircuitBlockedUntil
+			}
+		} else {
+			cooldown := cooldownSecondsFor(s, policy.Breaker)
+			if time.Now().Unix()-s.openedAt.Load() < cooldown {
+				return ReasonCircuitOpen
+			}
+		}
+		// 到期后可进入半开探测，继续检查半开容量
+		fallthrough
+	case breakerHalfOpen:
+		maxProbes := policy.Breaker.HalfOpenProbes
+		if maxProbes <= 0 {
+			maxProbes = 1
+		}
+		if s.halfOpenProbes.Load() >= int32(maxProbes) {
+			since := s.halfOpenSince.Load()
+			if since > 0 && time.Since(time.Unix(0, since)) > halfOpenProbeLease {
+				return ""
+			}
+			return ReasonHalfOpenProbesExceeded
+		}
+		return ""
+	}
+	return ""
+}
+
+	// checkBreaker 对单把键做熔断状态机检查。
 // 返回 reason 非空表示不可用；returned took 为 true 表示本次调用预占了
 // 一个半开探测配额，调用方放弃时必须归还。
 func (t *Tracker) checkBreaker(k breakerKey, policy ChannelPolicy) (reason string, took bool) {

@@ -399,6 +399,53 @@ func TestInitChannelMetaResetsPerAttemptStreamStateAndPreservesRequestState(t *t
 	assert.Equal(t, "message_start", responses[0].Type)
 }
 
+func TestInitChannelMeta_FallbackPreservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	info := &RelayInfo{
+		OriginModelName: "gpt-4o",
+		ChannelMeta: &ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			ChannelId:         123,
+			ApiKey:            "sk-test-preserved",
+			ChannelBaseUrl:    "https://api.openai.com",
+			Organization:      "org-test",
+			ApiVersion:        "2024-02-01",
+			ChannelCreateTime: 123456789,
+			ParamOverride: map[string]any{
+				"temperature": 0.7,
+			},
+			HeadersOverride: map[string]any{
+				"X-Custom": "header",
+			},
+			UpstreamModelName: "gpt-4o-upstream",
+			ChannelSetting: dto.ChannelSettings{
+				PassThroughBodyEnabled: true,
+			},
+			SupportStreamOptions: true,
+		},
+	}
+
+	// 传入未设置渠道上下文的空白 gin.Context (例如内部重入或测试环境)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	info.InitChannelMeta(c)
+
+	require.NotNil(t, info.ChannelMeta)
+	assert.Equal(t, 123, info.ChannelMeta.ChannelId)
+	assert.Equal(t, constant.ChannelTypeOpenAI, info.ChannelMeta.ChannelType)
+	assert.Equal(t, "sk-test-preserved", info.ChannelMeta.ApiKey, "ApiKey 必须被保留")
+	assert.Equal(t, "https://api.openai.com", info.ChannelMeta.ChannelBaseUrl, "ChannelBaseUrl 必须被保留")
+	assert.Equal(t, "org-test", info.ChannelMeta.Organization, "Organization 必须被保留")
+	assert.Equal(t, "2024-02-01", info.ChannelMeta.ApiVersion, "ApiVersion 必须被保留")
+	assert.Equal(t, int64(123456789), info.ChannelMeta.ChannelCreateTime, "ChannelCreateTime 必须被保留")
+	assert.Equal(t, 0.7, info.ChannelMeta.ParamOverride["temperature"], "ParamOverride 必须被保留")
+	assert.Equal(t, "header", info.ChannelMeta.HeadersOverride["X-Custom"], "HeadersOverride 必须被保留")
+	assert.Equal(t, "gpt-4o-upstream", info.ChannelMeta.UpstreamModelName, "UpstreamModelName 必须被保留")
+	assert.True(t, info.ChannelMeta.ChannelSetting.PassThroughBodyEnabled, "ChannelSetting 必须被保留")
+	assert.True(t, info.ChannelMeta.SupportStreamOptions, "SupportStreamOptions 必须被保留")
+}
+
 func ptr[T any](value T) *T {
 	return &value
 }

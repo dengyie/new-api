@@ -20,8 +20,11 @@ import (
 func TestRecordChannelAffinity_AntiDowngradeProtection(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// 开启内存缓存并设置测试渠道
+	origMemCache := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
 	p10 := int64(10)
 	p8 := int64(8)
 	p5 := int64(5)
@@ -111,7 +114,11 @@ func TestRecordChannelAffinity_AntiDowngradeProtection(t *testing.T) {
 
 func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *testing.T) {
 	db := setupChannelSelectTest(t)
+	origMemCache := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
 	const modelName = "gpt-6-astra-priority-test"
 
 	p10 := int64(10)
@@ -232,7 +239,11 @@ func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *tes
 
 func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	origMemCache := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
 
 	p10 := int64(10)
 	p8 := int64(8)
@@ -296,7 +307,11 @@ func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T
 
 func TestSelectChannelForRequest_ReasoningDriftDetection(t *testing.T) {
 	db := setupChannelSelectTest(t)
+	origMemCache := common.MemoryCacheEnabled
 	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
 	const modelName = "gpt-6-astra-drift-test"
 
 	p10 := int64(10)
@@ -383,3 +398,29 @@ func TestSelectChannelForRequest_ReasoningDriftDetection(t *testing.T) {
 	assert.Equal(t, chHigh.Id, selected2.Id)
 	assert.False(t, common.GetContextKeyBool(c2, constant.ContextKeyStripResponsesReasoning), "同渠道无漂移时不得标记 strip 标记，以完整保留密文")
 }
+
+func TestClearChannelAffinityCacheAll_DualCacheConsistency(t *testing.T) {
+	cache := getChannelAffinityCache()
+	originCache := getChannelAffinityReasoningOriginCache()
+
+	key1 := fmt.Sprintf("test-dual-clean-1-%d", time.Now().UnixNano())
+	key2 := fmt.Sprintf("test-dual-clean-2-%d", time.Now().UnixNano())
+
+	require.NoError(t, cache.SetWithTTL(key1, 100, 300*time.Second))
+	require.NoError(t, originCache.SetWithTTL(key2, 200, 300*time.Second))
+
+	_, found1, _ := cache.Get(key1)
+	require.True(t, found1)
+	_, found2, _ := originCache.Get(key2)
+	require.True(t, found2)
+
+	// 全局清空必须同时清空亲和度缓存与密文来源缓存
+	cleared := ClearChannelAffinityCacheAll()
+	assert.GreaterOrEqual(t, cleared, 1)
+
+	_, found1After, _ := cache.Get(key1)
+	assert.False(t, found1After, "全局清空后路由亲和度主缓存必须为空")
+	_, found2After, _ := originCache.Get(key2)
+	assert.False(t, found2After, "全局清空后密文来源缓存必须同步为空")
+}
+

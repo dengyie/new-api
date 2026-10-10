@@ -517,9 +517,27 @@ func IsReasoningHydrationError(err *types.NewAPIError) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "reasoning hydration failed") ||
+	if strings.Contains(msg, "reasoning hydration failed") ||
 		(strings.Contains(msg, "encrypted content") && strings.Contains(msg, "could not be verified")) ||
-		(strings.Contains(msg, "encrypted content could not be decrypted"))
+		(strings.Contains(msg, "encrypted content could not be decrypted")) {
+		return true
+	}
+	if oe, ok := err.RelayError.(types.OpenAIError); ok {
+		relayMsg := strings.ToLower(oe.Message)
+		if strings.Contains(relayMsg, "reasoning hydration failed") ||
+			(strings.Contains(relayMsg, "encrypted content") && strings.Contains(relayMsg, "could not be verified")) ||
+			(strings.Contains(relayMsg, "encrypted content could not be decrypted")) {
+			return true
+		}
+	} else if poe, ok := err.RelayError.(*types.OpenAIError); ok && poe != nil {
+		relayMsg := strings.ToLower(poe.Message)
+		if strings.Contains(relayMsg, "reasoning hydration failed") ||
+			(strings.Contains(relayMsg, "encrypted content") && strings.Contains(relayMsg, "could not be verified")) ||
+			(strings.Contains(relayMsg, "encrypted content could not be decrypted")) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsUpstreamToolCallStateLostError 判断是否为上游丢失工具调用会话状态错误（通常返回 400）。
