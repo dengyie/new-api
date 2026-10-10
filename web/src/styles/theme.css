@@ -94,6 +94,9 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 :root {
+  /* Native form controls, scrollbars and the UA canvas follow this, not the
+     JS-applied class alone. */
+  color-scheme: light;
   --radius: 1rem;
   --app-header-height: 3rem;
   /* Static build-channel fallback consumed when JS hasn't booted yet. */
@@ -179,6 +182,7 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .dark {
+  color-scheme: dark;
   /* OpenAI-like dark mode with a crisp charcoal canvas. */
   --background: oklch(0.235 0 0);
   --foreground: oklch(0.965 0 0);

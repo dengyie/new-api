@@ -25,6 +25,14 @@ export const THEME_STORAGE_KEYS = {
   contentLayout: 'newapi:theme:v1:content-layout',
 } as const
 
+/** Browser chrome colours for the `theme-color` meta tag. Must track the paper
+ *  palette (`--site-paper`) in `src/styles/site-design.css`. The inline boot
+ *  script in `index.html` duplicates these two literals; keep them in step. */
+export const THEME_CHROME_COLORS = {
+  light: '#fbfaf6',
+  dark: '#141413',
+} as const
+
 export function readThemePreference<T extends string>(
   key: string,
   allowed: ReadonlySet<T>,

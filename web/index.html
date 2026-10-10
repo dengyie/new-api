@@ -15,7 +15,37 @@
       content="Unified AI API gateway and admin dashboard."
     />
 
-    <meta name="theme-color" content="#fff" />
+    <meta name="theme-color" content="#fbfaf6" />
+    <!-- Resolve the colour mode before the first paint. This mirrors
+         src/context/theme-provider.tsx (localStorage key `newapi:theme:v1:mode`,
+         falling back to the system preference). It must stay inline and
+         synchronous: the React effect that sets `html.dark` only runs after
+         hydration, so without this the first frame is always the light paper
+         palette and dark-system users see a white flash. Keep the key, the
+         allowed values and the two chrome colours in sync with
+         src/lib/theme-storage.ts (guarded by index-theme-boot.test.ts). -->
+    <script>
+      ;(() => {
+        try {
+          let mode = null
+          try {
+            mode = localStorage.getItem('newapi:theme:v1:mode')
+          } catch {}
+          if (mode !== 'light' && mode !== 'dark' && mode !== 'system') {
+            mode = 'system'
+          }
+          const dark =
+            mode === 'dark' ||
+            (mode === 'system' &&
+              window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+          const root = document.documentElement
+          root.classList.remove('light', 'dark')
+          root.classList.add(dark ? 'dark' : 'light')
+          const meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', dark ? '#141413' : '#fbfaf6')
+        } catch {}
+      })()
+    </script>
     <!--umami-->
     <!--Google Analytics-->
   </head>

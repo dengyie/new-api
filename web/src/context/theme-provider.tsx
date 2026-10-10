@@ -27,6 +27,7 @@ import {
 
 import {
   readThemePreference,
+  THEME_CHROME_COLORS,
   THEME_STORAGE_KEYS,
   writeThemePreference,
 } from '@/lib/theme-storage'
@@ -87,12 +88,23 @@ export function ThemeProvider({
 
   useEffect(() => {
     const root = window.document.documentElement
+    const themeColorMeta = window.document.querySelector<HTMLMetaElement>(
+      "meta[name='theme-color']"
+    )
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
 
     const applyTheme = () => {
       const nextResolvedTheme = theme === 'system' ? getSystemTheme() : theme
       root.classList.remove('light', 'dark')
       root.classList.add(nextResolvedTheme)
+      // Drive the browser chrome from the *resolved* theme so `system` follows
+      // the OS instead of staying on the light value.
+      if (themeColorMeta) {
+        themeColorMeta.setAttribute(
+          'content',
+          THEME_CHROME_COLORS[nextResolvedTheme]
+        )
+      }
       setResolvedTheme(nextResolvedTheme)
     }
 
