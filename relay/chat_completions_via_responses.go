@@ -132,6 +132,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	if shouldStripReasoning {
 		responsesReq.StripReasoningInput()
 	}
+	responsesReq.EnsureCodexFields()
 
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {

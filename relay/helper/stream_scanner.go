@@ -122,32 +122,32 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	var lbTTFTSlow atomic.Bool
 	var lbFirstByteOnce sync.Once
 
-		// 首字超时检测：超时未收到首字则中断上游连接。
-		// 动态扣减响应头建立及等待已消耗的时间，使整段首字等待严格收敛在 TTFTTimeoutMs 之内。
-		var ttftTimer *time.Timer
-		if loadbalancer.Enabled() && lbPolicy.TTFTTimeoutMs > 0 {
-			remainingTTFT := time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
-			if info != nil && !info.StartTime.IsZero() {
-				elapsed := time.Since(info.StartTime)
-				if elapsed < remainingTTFT {
-					remainingTTFT -= elapsed
-				} else {
-					remainingTTFT = 500 * time.Millisecond
-				}
+	// 首字超时检测：超时未收到首字则中断上游连接。
+	// 动态扣减响应头建立及等待已消耗的时间，使整段首字等待严格收敛在 TTFTTimeoutMs 之内。
+	var ttftTimer *time.Timer
+	if loadbalancer.Enabled() && lbPolicy.TTFTTimeoutMs > 0 {
+		remainingTTFT := time.Duration(lbPolicy.TTFTTimeoutMs) * time.Millisecond
+		if info != nil && !info.StartTime.IsZero() {
+			elapsed := time.Since(info.StartTime)
+			if elapsed < remainingTTFT {
+				remainingTTFT -= elapsed
+			} else {
+				remainingTTFT = 500 * time.Millisecond
 			}
-			ttftTimer = time.AfterFunc(remainingTTFT, func() {
-				lbFirstByteOnce.Do(func() {
-					// 仍未收到首字：标记为慢，中断连接触发流结束
-					lbTTFTSlow.Store(true)
-					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout,
-						&loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs})
-					if resp.Body != nil {
-						_ = resp.Body.Close()
-					}
-				})
-			})
-			defer ttftTimer.Stop()
 		}
+		ttftTimer = time.AfterFunc(remainingTTFT, func() {
+			lbFirstByteOnce.Do(func() {
+				// 仍未收到首字：标记为慢，中断连接触发流结束
+				lbTTFTSlow.Store(true)
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout,
+					&loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs})
+				if resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+			})
+		})
+		defer ttftTimer.Stop()
+	}
 	markFirstByte := func() {
 		lbFirstByteOnce.Do(func() {
 			if ttftTimer != nil {
@@ -359,20 +359,20 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
-				if len(data) < 6 {
-					continue
-				}
-				if data[:5] != "data:" && data[:6] != "[DONE]" {
-					continue
-				}
-				data = data[5:]
-				data = strings.TrimSpace(data)
-				if data == "" {
-					continue
-				}
+			if len(data) < 6 {
+				continue
+			}
+			if data[:5] != "data:" && data[:6] != "[DONE]" {
+				continue
+			}
+			data = data[5:]
+			data = strings.TrimSpace(data)
+			if data == "" {
+				continue
+			}
 
-				// 智能负载：首个有效数据/完成帧到达即标记首字（SSE 注释/心跳空帧不计入首字）
-				markFirstByte()
+			// 智能负载：首个有效数据/完成帧到达即标记首字（SSE 注释/心跳空帧不计入首字）
+			markFirstByte()
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
@@ -419,27 +419,27 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
 		info.StreamStatus.RecordError("streaming timeout")
 	case <-stopChan:
-		// EndReason already set by the goroutine that triggered stopChan
-		case <-c.Request.Context().Done():
-			// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
-			// 避免为已放弃的请求继续消费上游 token。
-			if errors.Is(c.Request.Context().Err(), context.Canceled) {
-				info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
-			} else {
-				info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
-			}
-		}
-
-		// 客户端断开判定：即使 stopChan 先触发（例如向客户端写响应时检测到 context done），
-		// 只要客户端 context 已取消或记录了 context canceled，最终原因应纠正为 ClientGone。
-		// 必须严格区分 context.Canceled 与 context.DeadlineExceeded，不能将网关超时误判为客户端放弃。
-		if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled) {
+	// EndReason already set by the goroutine that triggered stopChan
+	case <-c.Request.Context().Done():
+		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
+		// 避免为已放弃的请求继续消费上游 token。
+		if errors.Is(c.Request.Context().Err(), context.Canceled) {
 			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
-		} else if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.DeadlineExceeded) {
+		} else {
 			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
-		} else if _, recordedErr := info.StreamStatus.EndState(); recordedErr != nil && (errors.Is(recordedErr, context.Canceled) || strings.Contains(recordedErr.Error(), "context canceled")) {
-			info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, recordedErr)
 		}
+	}
+
+	// 客户端断开判定：即使 stopChan 先触发（例如向客户端写响应时检测到 context done），
+	// 只要客户端 context 已取消或记录了 context canceled，最终原因应纠正为 ClientGone。
+	// 必须严格区分 context.Canceled 与 context.DeadlineExceeded，不能将网关超时误判为客户端放弃。
+	if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled) {
+		info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+	} else if c != nil && c.Request != nil && errors.Is(c.Request.Context().Err(), context.DeadlineExceeded) {
+		info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonTimeout, c.Request.Context().Err())
+	} else if _, recordedErr := info.StreamStatus.EndState(); recordedErr != nil && (errors.Is(recordedErr, context.Canceled) || strings.Contains(recordedErr.Error(), "context canceled")) {
+		info.StreamStatus.OverrideEndReason(relaycommon.StreamEndReasonClientGone, recordedErr)
+	}
 
 	cleanup()
 	switch {

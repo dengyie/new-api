@@ -120,12 +120,16 @@ func priorityTiers(pool []*Channel) []int64 {
 
 // TopAvailablePriority returns the highest priority among enabled, non-excluded channels
 // that are currently available in the loadbalancer tracker (neither breaker-tripped nor overloaded).
+// It prioritizes healthy (non-degraded) channels when determining the available top priority tier.
 func (c *ChannelCandidates) TopAvailablePriority(excludedIDs map[int]struct{}, modelName string) (int64, bool) {
 	if c == nil || len(c.channels) == 0 {
 		return 0, false
 	}
 	var maxPriority int64 = math.MinInt64
+	var maxHealthyPriority int64 = math.MinInt64
 	hasAvail := false
+	hasHealthy := false
+	tracker := loadbalancer.GlobalTracker()
 	for _, channel := range c.channels {
 		if channel.Status != common.ChannelStatusEnabled {
 			continue
@@ -135,18 +139,27 @@ func (c *ChannelCandidates) TopAvailablePriority(excludedIDs map[int]struct{}, m
 				continue
 			}
 		}
-		if ok, _ := loadbalancer.GlobalTracker().PeekAvailable(channel.Id, modelName); ok {
+		if ok, _ := tracker.PeekAvailable(channel.Id, modelName); ok {
 			p := channel.GetPriority()
 			if !hasAvail || p > maxPriority {
 				maxPriority = p
 				hasAvail = true
 			}
+			if !tracker.IsDegraded(channel.Id, modelName) {
+				if !hasHealthy || p > maxHealthyPriority {
+					maxHealthyPriority = p
+					hasHealthy = true
+				}
+			}
 		}
 	}
-	if !hasAvail {
-		return 0, false
+	if hasHealthy {
+		return maxHealthyPriority, true
 	}
-	return maxPriority, true
+	if hasAvail {
+		return maxPriority, true
+	}
+	return 0, false
 }
 
 // GetChannelCandidates resolves every channel able to serve group and

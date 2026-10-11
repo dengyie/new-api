@@ -678,28 +678,28 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
-		if resp == nil {
-			if cancelHeaderTimeout != nil {
-				cancelHeaderTimeout()
-			}
-			return nil, errors.New("resp is nil")
+	if resp == nil {
+		if cancelHeaderTimeout != nil {
+			cancelHeaderTimeout()
 		}
-		// 并发竞态防护：若定时器在 Do 返回的微秒级窗口内触发了取消，必须关闭已失效上下文的 Body 并返回 TTFT 超时
-		if headerTimedOut.Load() && c != nil && c.Request != nil && c.Request.Context().Err() == nil {
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			if cancelHeaderTimeout != nil {
-				cancelHeaderTimeout()
-			}
-			channelID := 0
-			if info != nil {
-				channelID = info.GetChannelID()
-			}
-			lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
-			logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%dms，并发到达），触发换渠道重试", channelID, lbPolicy.TTFTTimeoutMs))
-			return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs}
+		return nil, errors.New("resp is nil")
+	}
+	// 并发竞态防护：若定时器在 Do 返回的微秒级窗口内触发了取消，必须关闭已失效上下文的 Body 并返回 TTFT 超时
+	if headerTimedOut.Load() && c != nil && c.Request != nil && c.Request.Context().Err() == nil {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
 		}
+		if cancelHeaderTimeout != nil {
+			cancelHeaderTimeout()
+		}
+		channelID := 0
+		if info != nil {
+			channelID = info.GetChannelID()
+		}
+		lbPolicy := loadbalancer.GetPolicy().Resolve(channelID)
+		logger.LogError(c, fmt.Sprintf("渠道 #%d 响应头等待超时（%dms，并发到达），触发换渠道重试", channelID, lbPolicy.TTFTTimeoutMs))
+		return nil, &loadbalancer.TTFTTimeoutError{ChannelID: channelID, TimeoutMs: lbPolicy.TTFTTimeoutMs}
+	}
 	if cancelHeaderTimeout != nil && resp.Body != nil {
 		resp.Body = &responseBodyWithCancel{
 			ReadCloser: resp.Body,

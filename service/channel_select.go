@@ -489,8 +489,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
 			}
 			if affinitySatisfied {
-				// 检查熔断与过载状态：若首选亲和渠道处于熔断隔离或过载中，本轮不可用
-				if ok, _ := loadbalancer.GlobalTracker().IsAvailable(preferred.Id, modelName); !ok {
+				// 检查熔断与过载状态：使用纯只读 PeekAvailable，
+				// 避免在后续被更高优先级抢占或分组不匹配时浪费半开探测名额
+				if ok, _ := loadbalancer.GlobalTracker().PeekAvailable(preferred.Id, modelName); !ok {
 					affinitySatisfied = false
 				}
 			}
@@ -506,23 +507,29 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				}
 			}
 			if affinitySatisfied {
+				var matchedGroup string
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 					for _, g := range GetRequestAutoGroups(c, userGroup) {
 						if model.IsChannelEnabledForGroupModel(g, modelName, preferred.Id) {
-							selectGroup = g
-							common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
-							channel = preferred
-							affinityUsable = true
-							MarkChannelAffinityUsed(c, g, preferred.Id)
+							matchedGroup = g
 							break
 						}
 					}
 				} else if model.IsChannelEnabledForGroupModel(usingGroup, modelName, preferred.Id) {
-					channel = preferred
-					selectGroup = usingGroup
-					affinityUsable = true
-					MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+					matchedGroup = usingGroup
+				}
+				if matchedGroup != "" {
+					// 最终锁定使用该亲和渠道，正式调用 IsAvailable 校验并消费探测配额
+					if ok, _ := loadbalancer.GlobalTracker().IsAvailable(preferred.Id, modelName); ok {
+						channel = preferred
+						selectGroup = matchedGroup
+						affinityUsable = true
+						if usingGroup == "auto" {
+							common.SetContextKey(c, constant.ContextKeyAutoGroup, matchedGroup)
+						}
+						MarkChannelAffinityUsed(c, matchedGroup, preferred.Id)
+					}
 				}
 			}
 			if channelDisabled && !ShouldKeepChannelAffinityOnChannelDisabled() {
@@ -552,7 +559,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				channel = nil
 				continue
 			}
-			if ok, reason := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); !ok {
+			if ok, reason := loadbalancer.GlobalTracker().PeekAvailable(channel.Id, modelName); !ok {
 				logger.LogDebug(retry.Ctx, "loadbalancer: skip channel #%d [model=%s] (%s)", channel.Id, modelName, reason)
 				if reason == loadbalancer.ReasonOverloaded {
 					inflight := loadbalancer.GlobalTracker().Inflight(channel.Id)
@@ -577,6 +584,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 				channel = nil
 				continue
 			}
+			// 确定选用该非降级健康渠道，正式调用 IsAvailable 校验并消费探测配额
+			if ok, _ := loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName); !ok {
+				retryLocal.ExcludedIDs[channel.Id] = struct{}{}
+				channel = nil
+				continue
+			}
 			break
 		}
 		// 过载兜底：当所有可用渠道均达到并发上限且无其他健康渠道时，选取负载
@@ -593,6 +606,8 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		if channel == nil && degradedFallback != nil {
 			channel = degradedFallback
 			selectGroup = degradedSelectGroup
+			// 确定选用降级兜底渠道，正式调用 IsAvailable 消费探测配额
+			_, _ = loadbalancer.GlobalTracker().IsAvailable(channel.Id, modelName)
 			logger.LogDebug(retry.Ctx, "loadbalancer: using degraded channel #%d as fallback", channel.Id)
 		}
 		if err != nil {

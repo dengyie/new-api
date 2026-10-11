@@ -53,4 +53,24 @@ func TestConvertOpenAIResponsesRequestDropsPenalties(t *testing.T) {
 	assert.Nil(t, request.Temperature)
 	assert.Nil(t, request.FrequencyPenalty)
 	assert.Nil(t, request.PresencePenalty)
+	assert.JSONEq(t, `["reasoning.encrypted_content"]`, string(request.Include))
+}
+
+func TestConvertOpenAIResponsesRequestEnsuresCodexFields(t *testing.T) {
+	adaptor := &Adaptor{}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeCodex},
+		RelayMode:   relayconstant.RelayModeResponses,
+	}
+
+	converted, err := adaptor.ConvertOpenAIResponsesRequest(nil, info, dto.OpenAIResponsesRequest{
+		Model:   "gpt-5-codex",
+		Input:   json.RawMessage(`"hello"`),
+		Include: json.RawMessage(`["other_field"]`),
+	})
+	require.NoError(t, err)
+
+	request, ok := converted.(dto.OpenAIResponsesRequest)
+	require.True(t, ok)
+	assert.JSONEq(t, `["other_field","reasoning.encrypted_content"]`, string(request.Include))
 }

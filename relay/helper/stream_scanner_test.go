@@ -822,5 +822,3 @@ func TestStreamScannerHandler_SSEKeepAliveCommentsIgnored(t *testing.T) {
 	assert.Equal(t, []string{"{\"text\":\"hi\"}"}, receivedData, "心跳注释帧不得分发给业务 handler")
 	assert.True(t, info.StreamStatus.IsNormalEnd())
 }
-
-

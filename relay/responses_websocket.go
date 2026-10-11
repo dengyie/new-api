@@ -17,6 +17,7 @@ import (
 	appconstant "github.com/dengyie/apihub/constant"
 	appdto "github.com/dengyie/apihub/dto"
 	"github.com/dengyie/apihub/i18n"
+	"github.com/dengyie/apihub/loadbalancer"
 	"github.com/dengyie/apihub/middleware"
 	appmodel "github.com/dengyie/apihub/model"
 	perfmetrics "github.com/dengyie/apihub/pkg/perf_metrics"
@@ -27,7 +28,6 @@ import (
 	"github.com/dengyie/apihub/relaykit/dto"
 	"github.com/dengyie/apihub/relaykit/types"
 	"github.com/dengyie/apihub/service"
-	"github.com/dengyie/apihub/loadbalancer"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -329,21 +329,21 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			adaptor := GetAdaptor(info.ApiType)
 			adaptor.Init(info)
 			target, dialErr := relaychannel.DoWssRequest(adaptor, c, info, nil)
-				if dialErr != nil {
-					apiErr = service.NormalizeViolationFeeError(types.NewError(dialErr, types.ErrorCodeDoRequestFailed))
-					service.ResetStatusCode(apiErr, c.GetString("status_code_mapping"))
-					info.LastError = apiErr
-					decision := service.DecideRelayRetry(c, apiErr, common.RetryTimes-retry.GetRetry())
-					service.RecordPolicyFailure(c, channel.Id, apiErr, decision)
-					service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
-					if loadbalancer.IsReasoningHydrationError(apiErr) {
-						common.SetContextKey(c, appconstant.ContextKeyStripResponsesReasoning, true)
-					}
-					if decision.Action == "retry" {
-						continue
-					}
-					return apiErr
+			if dialErr != nil {
+				apiErr = service.NormalizeViolationFeeError(types.NewError(dialErr, types.ErrorCodeDoRequestFailed))
+				service.ResetStatusCode(apiErr, c.GetString("status_code_mapping"))
+				info.LastError = apiErr
+				decision := service.DecideRelayRetry(c, apiErr, common.RetryTimes-retry.GetRetry())
+				service.RecordPolicyFailure(c, channel.Id, apiErr, decision)
+				service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
+				if loadbalancer.IsReasoningHydrationError(apiErr) {
+					common.SetContextKey(c, appconstant.ContextKeyStripResponsesReasoning, true)
 				}
+				if decision.Action == "retry" {
+					continue
+				}
+				return apiErr
+			}
 			if !s.setTarget(target) {
 				return types.NewError(context.Canceled, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}

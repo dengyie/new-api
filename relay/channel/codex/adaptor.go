@@ -96,6 +96,8 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		request.Instructions = json.RawMessage(`""`)
 	}
 
+	request.EnsureCodexFields()
+
 	if isCompact {
 		return request, nil
 	}

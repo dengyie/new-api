@@ -237,6 +237,135 @@ func TestSelectChannelForRequest_TopPriorityPrecedesLowerPriorityAffinity(t *tes
 	assert.Equal(t, chMid.Id, selected2.Id, "当高优先级渠道熔断不可用时，优雅回退到亲和度渠道 99")
 }
 
+func TestSelectChannelForRequest_PreferredAffinityDoesNotLeakHalfOpenProbesWhenPreempted(t *testing.T) {
+	db := setupChannelSelectTest(t)
+	origMemCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = origMemCache
+	})
+	const modelName = "gpt-6-probe-guard-test"
+
+	p10 := int64(10)
+	p8 := int64(8)
+	weight := uint(100)
+
+	chHigh := &model.Channel{
+		Id:       1540,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-1540",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "cpa-top",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p10,
+	}
+	chMid := &model.Channel{
+		Id:       990,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "key-990",
+		Status:   common.ChannelStatusEnabled,
+		Name:     "affinity-mid",
+		Weight:   &weight,
+		Models:   modelName,
+		Group:    "default",
+		Priority: &p8,
+	}
+
+	require.NoError(t, db.Create(chHigh).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group:     "default",
+		Model:     modelName,
+		ChannelId: chHigh.Id,
+		Enabled:   true,
+		Priority:  &p10,
+		Weight:    weight,
+	}).Error)
+
+	require.NoError(t, db.Create(chMid).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group:     "default",
+		Model:     modelName,
+		ChannelId: chMid.Id,
+		Enabled:   true,
+		Priority:  &p8,
+		Weight:    weight,
+	}).Error)
+
+	loadbalancer.SetPolicy(&loadbalancer.Policy{
+		Enabled: true,
+		Default: loadbalancer.ChannelPolicy{
+			Breaker: loadbalancer.BreakerPolicy{
+				FailureThreshold: 1,
+				CooldownSeconds:  1,
+				HalfOpenProbes:   1,
+			},
+		},
+	})
+	t.Cleanup(func() {
+		loadbalancer.SetPolicy(&loadbalancer.Policy{Enabled: false})
+	})
+
+	rule := operation_setting.ChannelAffinityRule{
+		Name:             "rule-probe-guard-test",
+		ModelRegex:       []string{fmt.Sprintf("^%s$", modelName)},
+		PathRegex:        []string{"/v1/.*"},
+		KeySources:       []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session-Key"}},
+		IncludeRuleName:  true,
+		IncludeModelName: true,
+	}
+
+	setting := operation_setting.GetChannelAffinitySetting()
+	origEnabled := setting.Enabled
+	origRules := setting.Rules
+	setting.Enabled = true
+	setting.Rules = append([]operation_setting.ChannelAffinityRule{rule}, origRules...)
+	t.Cleanup(func() {
+		setting.Enabled = origEnabled
+		setting.Rules = origRules
+	})
+
+	affinityVal := fmt.Sprintf("sess-probe-%d", time.Now().UnixNano())
+	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, "default", affinityVal)
+	cache := getChannelAffinityCache()
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, chMid.Id, 300*time.Second))
+	t.Cleanup(func() {
+		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
+	})
+
+	// 使 chMid 触发硬故障并进入半开探测阶段
+	tr := loadbalancer.GlobalTracker()
+	h := tr.Begin(chMid.Id, modelName)
+	h.End(false, true)
+	time.Sleep(1100 * time.Millisecond)
+
+	// 确认 chMid 处于半开，PeekAvailable 返回可用
+	avail, _ := tr.PeekAvailable(chMid.Id, modelName)
+	require.True(t, avail, "冷却结束后半开探测应 peek 可用")
+
+	// 1. 发起选路请求：chMid 为亲和度渠道，但候选池有更高优先级的健康渠道 chHigh
+	c, retry := newSelectRetryParam(modelName, nil)
+	c.Request.Header.Set("X-Session-Key", affinityVal)
+
+	selected, selectGroup, err := SelectChannelForRequest(c, modelName, retry)
+	require.Nil(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, "default", selectGroup)
+	assert.Equal(t, chHigh.Id, selected.Id, "应优先放行高优先级渠道")
+
+	// 2. 核心断言：chMid 因优先级被抢占并未被选用，其半开探测配额绝不得被提前消费
+	// 若之前的逻辑过早调用了 IsAvailable，则此处调用将因配额耗尽而返回 false (ReasonHalfOpenProbesExceeded)
+	ok, reason := tr.IsAvailable(chMid.Id, modelName)
+	assert.True(t, ok, "未被选用的亲和渠道必须保留其半开探测配额")
+	assert.Empty(t, reason)
+
+	// 再次调用将正式消耗完唯一的探测配额
+	ok2, reason2 := tr.IsAvailable(chMid.Id, modelName)
+	assert.False(t, ok2)
+	assert.Equal(t, loadbalancer.ReasonHalfOpenProbesExceeded, reason2)
+}
+
 func TestRecordReasoningOriginChannel_And_GetReasoningOriginChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	origMemCache := common.MemoryCacheEnabled
@@ -423,4 +552,3 @@ func TestClearChannelAffinityCacheAll_DualCacheConsistency(t *testing.T) {
 	_, found2After, _ := originCache.Get(key2)
 	assert.False(t, found2After, "全局清空后密文来源缓存必须同步为空")
 }
-

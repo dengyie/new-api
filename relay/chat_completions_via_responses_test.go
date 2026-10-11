@@ -198,6 +198,9 @@ func TestTextRequestViaResponsesConvertsClaudeDirectly(t *testing.T) {
 	var upstreamBody map[string]any
 	require.NoError(t, common.Unmarshal(upstream.body, &upstreamBody))
 	assert.NotContains(t, upstreamBody, "messages")
+	includes, ok := upstreamBody["include"].([]any)
+	require.True(t, ok, "upstream request must contain include field")
+	assert.Contains(t, includes, "reasoning.encrypted_content", "include must contain reasoning.encrypted_content for codex compatibility")
 	reasoning, ok := upstreamBody["reasoning"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "high", reasoning["effort"])

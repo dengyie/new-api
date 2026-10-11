@@ -356,4 +356,3 @@ func TestStreamStatus_OverrideEndReason_AllowsClientAbortCorrection(t *testing.T
 	assert.Equal(t, StreamEndReasonClientGone, s.EndReason)
 	assert.True(t, s.IsClientAbort())
 }
-

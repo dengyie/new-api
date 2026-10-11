@@ -189,6 +189,7 @@ func TestClassifyAutoDisableRespectsGlobalSwitch(t *testing.T) {
 			"总开关关闭时，佐证机制不得成为绕过它的后门")
 	}
 }
+
 // TestProcessChannelErrorDoesNotCountWhenAutoBanOff 钉住求值顺序。
 //
 // 禁用闸门写的是 `AutoBan && ShouldDisableChannelCorroborated(...)`，而不是

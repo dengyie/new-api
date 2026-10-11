@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/dengyie/apihub/common"
 	"github.com/dengyie/apihub/constant"
 	taskdto "github.com/dengyie/apihub/dto"
@@ -17,7 +18,6 @@ import (
 	"github.com/dengyie/apihub/pkg/billingexpr"
 	relaycommon "github.com/dengyie/apihub/relay/common"
 	"github.com/dengyie/apihub/relaykit/dto"
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
